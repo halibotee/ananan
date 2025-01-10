@@ -1,0 +1,219 @@
+#!/bin/sh
+
+# 错误处理函数
+handle_error() {
+    echo "发生错误: $1"
+    echo "解决办法: $2"
+    exit 1
+}
+
+# 创建配置文件
+create_config_file() {
+    local file_path=$1
+    local config_content=$2
+
+    echo "$config_content" > "$file_path" || handle_error "创建配置文件 $file_path 失败" "请检查文件权限"
+}
+
+install_kcptun() {
+    # 1. 安装更新及组件
+    echo "即将更新系统并安装必要组件..."
+    apt update && apt upgrade -y || handle_error "更新系统和安装组件失败" "请检查网络连接并重试"
+    apt-get install -y iptables || handle_error "安装iptables失败" "请检查网络连接并重试"
+
+    # 2. 创建安装目录
+    echo "即将创建安装目录..."
+    mkdir -p /etc/kcptun-udp2raw/kcptun /etc/kcptun-udp2raw/udp2raw || handle_error "创建安装目录失败" "请检查目录权限"
+
+    # 3. 安装kcptun
+    echo "即将安装kcptun..."
+    cd /etc/kcptun-udp2raw/kcptun
+    curl -L https://raw.githubusercontent.com/xtaci/kcptun/master/download.sh | sh || handle_error "下载kcptun失败" "请检查网络连接并重试"
+    LATEST_VERSION=$(curl -s https://api.github.com/repos/xtaci/kcptun/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/') || handle_error "获取kcptun最新版本失败" "请检查网络连接并重试"
+    tar -xzf kcptun-linux-amd64-${LATEST_VERSION}.tar.gz || handle_error "解压kcptun文件失败" "请检查文件是否下载完整"
+
+    # 4. 创建kcptun配置文件
+    echo "请选择kcptun脚本类型：1. 与udp2raw联合使用 2. 独立使用"
+    read -p "输入1或2: " kcptun_choice
+
+    KCPTUN_CONFIG_UDP2RAW='{
+        "smuxver": 2,
+        "listen": ":50400",
+        "target": "127.0.0.1:44285",
+        "key": "PaBilPk4I43zul9iKhDuGT0",
+        "crypt": "none",
+        "mode": "fast3",
+        "mtu": 1300,
+        "sndwnd": 4096,
+        "rcvwnd": 4096,
+        "datashard": 10,
+        "parityshard": 0,
+        "dscp": 46,
+        "nocomp": true,
+        "acknodelay": false,
+        "nodelay": 1,
+        "interval": 20,
+        "resend": 2,
+        "nc": 1,
+        "sockbuf": 16777217,
+        "smuxbuf": 16777217,
+        "streambuf": 4194304,
+        "keepalive": 10,
+        "pprof": false,
+        "quiet": false,
+        "tcp": true,
+        "closeWait": 0
+    }'
+
+    KCPTUN_CONFIG_INDEPENDENT='{
+        "smuxver": 2,
+        "listen": ":50400-51570",
+        "target": "127.0.0.1:44285",
+        "key": "PaBilPk4I43zul9iKhDuGT0",
+        "crypt": "none",
+        "mode": "fast3",
+        "mtu": 1400,
+        "sndwnd": 4096,
+        "rcvwnd": 4096,
+        "datashard": 10,
+        "parityshard": 0,
+        "dscp": 46,
+        "nocomp": true,
+        "acknodelay": false,
+        "nodelay": 1,
+        "interval": 20,
+        "resend": 2,
+        "nc": 1,
+        "sockbuf": 16777217,
+        "smuxbuf": 16777217,
+        "streambuf": 4194304,
+        "keepalive": 10,
+        "pprof": false,
+        "quiet": false,
+        "tcp": true,
+        "closeWait": 0
+    }'
+
+    if [ "$kcptun_choice" = "1" ]; then
+        create_config_file "/etc/kcptun-udp2raw/kcptun/config.json" "$KCPTUN_CONFIG_UDP2RAW"
+    else
+        create_config_file "/etc/kcptun-udp2raw/kcptun/config.json" "$KCPTUN_CONFIG_INDEPENDENT"
+    fi
+
+    # 测试kcptun
+    echo "即将测试kcptun，按Ctrl+C退出..."
+    /etc/kcptun-udp2raw/kcptun/server_linux_amd64 -c /etc/kcptun-udp2raw/kcptun/config.json || handle_error "测试kcptun失败" "请检查配置文件和安装情况"
+
+    # 5. 安装udp2raw
+    echo "即将安装udp2raw..."
+    cd /etc/kcptun-udp2raw/udp2raw
+    wget https://github.com/wangyu-/udp2raw/releases/download/20230206.0/udp2raw_binaries.tar.gz || handle_error "下载udp2raw失败" "请检查网络连接并重试"
+    tar -xzf udp2raw_binaries.tar.gz || handle_error "解压udp2raw文件失败" "请检查文件是否下载完整"
+
+    # 6. 创建udp2raw配置文件
+    echo "请选择udp2raw脚本类型：1. RS服务器 2. CA服务器"
+    read -p "输入1或2: " udp2raw_choice
+
+    UDP2RAW_CONFIG_RS='
+    -s
+    -l 0.0.0.0:30366
+    -r 127.0.0.1:50400
+    -k U2d3o0a8
+    --raw-mode faketcp
+    --cipher-mode xor
+    --auth-mode crc32
+    --seq-mode 4
+    -a
+    --lower-level auto
+    --fifo
+    --fix-gro
+    '
+
+    UDP2RAW_CONFIG_CA='
+    -s
+    -l 0.0.0.0:30366
+    -r 127.0.0.1:50400
+    -k U2d3o0a8
+    --raw-mode faketcp
+    --cipher-mode xor
+    --auth-mode crc32
+    --seq-mode 4
+    --fifo
+    --fix-gro
+    -a
+    '
+
+    if [ "$udp2raw_choice" = "1" ]; then
+        create_config_file "/etc/kcptun-udp2raw/udp2raw/udp2raw.conf" "$UDP2RAW_CONFIG_RS"
+    else
+        create_config_file "/etc/kcptun-udp2raw/udp2raw/udp2raw.conf" "$UDP2RAW_CONFIG_CA"
+    fi
+
+    # 测试udp2raw
+    echo "即将测试udp2raw，按CTRL+C退出..."
+    /etc/kcptun-udp2raw/udp2raw/udp2raw_amd64 --conf-file /etc/kcptun-udp2raw/udp2raw/udp2raw.conf || handle_error "测试udp2raw失败" "请检查配置文件和安装情况"
+
+    # 设置开机启动
+    echo "即将设置开机启动..."
+    cat > /etc/rc.local <<-EOF
+    #!/bin/sh -e
+    /etc/kcptun-udp2raw/udp2raw/udp2raw_amd64 --conf-file /etc/kcptun-udp2raw/udp2raw/udp2raw.conf & /etc/kcptun-udp2raw/kcptun/server_linux_amd64 -c /etc/kcptun-udp2raw/kcptun/config.json
+    exit 0
+    EOF
+
+    chmod +x /etc/rc.local || handle_error "设置rc.local权限失败" "请检查文件权限"
+    systemctl start rc-local.service || handle_error "启动rc-local服务失败" "请检查服务状态"
+
+    # 提示用户安装结束，询问是否现在重启
+    echo "安装完成，是否现在重启？(y/n)"
+    read -p "输入y或n: " reboot_choice
+    if [ "$reboot_choice" = "y" ]; then
+        reboot
+    fi
+}
+
+check_update() {
+    echo "检查kcptun是否有更新..."
+    LATEST_KCPTUN_VERSION=$(curl -s https://api.github.com/repos/xtaci/kcptun/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/') || handle_error "获取kcptun最新版本失败" "请检查网络连接并重试"
+    CURRENT_KCPTUN_VERSION=$(/etc/kcptun-udp2raw/kcptun/server_linux_amd64 -v 2>&1 | grep "kcptun version" | awk '{print $3}') || handle_error "获取当前kcptun版本失败" "请检查kcptun安装情况"
+    
+    if [ "$LATEST_KCPTUN_VERSION" != "$CURRENT_KCPTUN_VERSION" ]; then
+        echo "发现kcptun新版本，正在更新..."
+        systemctl stop kcptun || handle_error "停止kcptun服务失败" "请检查服务状态"
+        cd /etc/kcptun-udp2raw/kcptun
+        curl -L https://raw.githubusercontent.com/xtaci/kcptun/master/download.sh | sh || handle_error "下载kcptun失败" "请检查网络连接并重试"
+        tar -xzf kcptun-linux-amd64-${LATEST_KCPTUN_VERSION}.tar.gz || handle_error "解压kcptun文件失败" "请检查文件是否下载完整"
+        systemctl start kcptun || handle_error "启动kcptun服务失败" "请检查服务状态"
+        echo "kcptun更新完成。"
+    else
+        echo "kcptun已是最新版本。"
+    fi
+
+    echo "检查udp2raw是否有更新..."
+    LATEST_UDP2RAW_VERSION=$(curl -s https://api.github.com/repos/wangyu-/udp2raw/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/') || handle_error "获取udp2raw最新版本失败" "请检查网络连接并重试"
+    CURRENT_UDP2RAW_VERSION=$(/etc/kcptun-udp2raw/udp2raw/udp2raw_amd64 -h 2>&1 | grep "udp2raw version" | awk '{print $3}') || handle_error "获取当前udp2raw版本失败" "请检查udp2raw安装情况"
+    
+    if [ "$LATEST_UDP2RAW_VERSION" != "$CURRENT_UDP2RAW_VERSION" ]; then
+        echo "发现udp2raw新版本，正在更新..."
+        systemctl stop udp2raw || handle_error "停止udp2raw服务失败" "请检查服务状态"
+        cd /etc/kcptun-udp2raw/udp2raw
+        wget https://github.com/wangyu-/udp2raw/releases/download/${LATEST_UDP2RAW_VERSION}/udp2raw_binaries.tar.gz || handle_error "下载udp2raw失败" "请检查网络连接并重试"
+        tar -xzf udp2raw_binaries.tar.gz || handle_error "解压udp2raw文件失败" "请检查文件是否下载完整"
+        systemctl start udp2raw || handle_error "启动udp2raw服务失败" "请检查服务状态"
+        echo "udp2raw更新完成。"
+    else
+        echo "udp2raw已是最新版本。"
+    fi
+}
+
+# 选择操作
+echo "请选择操作：1. 安装 2. 更新"
+read -p "输入1或2: " choice
+
+if [ "$choice" = "1" ]; then
+    install_kcptun
+elif [ "$choice" = "2" ]; then
+    check_update
+else
+    echo "无效的选择，请重新运行脚本并选择1或2。"
+fi
